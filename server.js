@@ -48,11 +48,10 @@ wss.on("connection", socket => {
 
 
     players.set(id, {
-
+        name: "Player",
         x: 0,
-        y: 1,
+        y: 1.5,
         z: 0
-
     });
 
 
@@ -81,6 +80,12 @@ wss.on("connection", socket => {
 
     socket.on("message", message => {
 
+        if (data.type === "join") {
+            const player = players.get(id);
+            if (player && typeof data.name === "string") {
+                player.name = data.name.trim().slice(0, 16) || "Player";
+             }
+        }
         try {
 
             const data =
