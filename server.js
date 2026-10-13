@@ -28,6 +28,37 @@ const roomNouns = [
     "Badger", "Comet", "Dragon", "Falcon", "Harbor", "Island",
     "Jaguar", "Lantern", "Meadow", "Otter", "Panda", "Voyage"
 ];
+const usernameAdjectives = [
+    "Amber", "Brisk", "Cosmic", "Daring", "Frosty", "Golden",
+    "Hidden", "Jolly", "Lucky", "Misty", "Neon", "Quiet"
+];
+const usernameNouns = [
+    "Badger", "Comet", "Dragon", "Falcon", "Harbor", "Island",
+    "Jaguar", "Lantern", "Meadow", "Otter", "Panda", "Voyage"
+];
+
+function createUsername() {
+    const taken = new Set(
+        Array.from(players.values(), player => player.name.toLowerCase())
+            .filter(name => name !== "admin")
+    );
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+        const adjective = usernameAdjectives[Math.floor(Math.random() * usernameAdjectives.length)];
+        const noun = usernameNouns[Math.floor(Math.random() * usernameNouns.length)];
+        const number = Math.floor(Math.random() * 90) + 10;
+        const name = `${adjective}${noun}${number}`;
+        if (!taken.has(name.toLowerCase())) {
+            return name;
+        }
+    }
+
+    let name;
+    do {
+        name = `Guest${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    } while (taken.has(name.toLowerCase()));
+    return name;
+}
 
 function send(socket, data) {
     if (socket.readyState === WebSocket.OPEN) {
@@ -110,7 +141,7 @@ function leaveRoom(id) {
     broadcastRoomList();
 }
 
-function joinRoom(id, requestedRoomId, name) {
+function joinRoom(id, requestedRoomId) {
     const player = players.get(id);
     const room = rooms.get(requestedRoomId);
     if (!player || !room) {
@@ -125,7 +156,6 @@ function joinRoom(id, requestedRoomId, name) {
         leaveRoom(id);
     }
 
-    player.name = typeof name === "string" ? name.trim().slice(0, 16) || "Player" : "Player";
     player.x = 0;
     player.y = 3.5;
     player.z = 0;
@@ -138,7 +168,8 @@ function joinRoom(id, requestedRoomId, name) {
         room: {
             id: room.id,
             name: room.name
-        }
+        },
+        username: player.name
     });
 
     broadcastPlayers(room.id);
@@ -161,7 +192,7 @@ wss.on("connection", socket => {
     const id = randomUUID();
     sockets.set(id, socket);
     players.set(id, {
-        name: "Player",
+        name: createUsername(),
         x: 0,
         y: 3.5,
         z: 0,
@@ -169,7 +200,11 @@ wss.on("connection", socket => {
         roomId: null
     });
 
-    send(socket, { type: "welcome", id });
+    send(socket, {
+        type: "welcome",
+        id,
+        username: players.get(id).name
+    });
 
     socket.on("message", rawMessage => {
         let data;
@@ -196,12 +231,24 @@ wss.on("connection", socket => {
                 players: new Set()
             };
             rooms.set(room.id, room);
-            joinRoom(id, room.id, data.name);
+            joinRoom(id, room.id);
             return;
         }
 
         if (data.type === "join_room" && typeof data.roomId === "string") {
-            joinRoom(id, data.roomId, data.name);
+            joinRoom(id, data.roomId);
+            return;
+        }
+
+        if (data.type === "become_admin") {
+            const player = players.get(id);
+            if (player) {
+                player.name = "admin";
+                send(socket, { type: "identity", username: player.name });
+                if (player.roomId) {
+                    broadcastPlayers(player.roomId);
+                }
+            }
             return;
         }
 
