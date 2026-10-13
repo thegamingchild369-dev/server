@@ -40,7 +40,8 @@ wss.on("connection", socket => {
         name: "Player",
         x: 0,
         y: 1.5,
-        z: 0
+        z: 0,
+        yaw: 0
     });
 
     console.log("Player connected:", id);
@@ -82,9 +83,22 @@ wss.on("connection", socket => {
                 return;
             }
 
-            player.x = Number(data.x);
-            player.y = Number(data.y);
-            player.z = Number(data.z);
+            const x = Number(data.x);
+            const y = Number(data.y);
+            const z = Number(data.z);
+
+            if (![x, y, z].every(Number.isFinite)) {
+                return;
+            }
+
+            player.x = x;
+            player.y = y;
+            player.z = z;
+
+            const yaw = Number(data.yaw);
+            if (Number.isFinite(yaw)) {
+                player.yaw = yaw;
+            }
         }
     });
 
