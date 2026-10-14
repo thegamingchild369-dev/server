@@ -180,7 +180,7 @@ function joinRoom(id, requestedRoomId) {
     }
 
     player.x = 0;
-    player.y = 3.5;
+    player.y = 0;
     player.z = 0;
     player.yaw = 0;
     player.emoting = false;
@@ -220,7 +220,7 @@ wss.on("connection", socket => {
         name: createUsername(),
         isAdmin: false,
         x: 0,
-        y: 3.5,
+        y: 0,
         z: 0,
         yaw: 0,
         emoting: false,
@@ -305,11 +305,13 @@ wss.on("connection", socket => {
             const player = players.get(id);
             const target = players.get(data.targetId);
             const signalType = data.signal.type;
-            const validDirection = player?.isAdmin
-                ? target?.isAdmin === false && player.cameraEnabled &&
-                  (signalType === "answer" || signalType === "candidate")
-                : target?.isAdmin === true && target.cameraEnabled &&
-                  (signalType === "offer" || signalType === "candidate");
+            const validDirection = signalType === "offer"
+                ? target?.isAdmin === true && target.cameraEnabled
+                : signalType === "answer"
+                    ? player?.isAdmin === true && player.cameraEnabled
+                    : signalType === "candidate" &&
+                      ((player?.isAdmin === true && player.cameraEnabled) ||
+                       (target?.isAdmin === true && target.cameraEnabled));
             if (!player?.roomId || player.roomId !== target?.roomId ||
                 !validDirection ||
                 JSON.stringify(data.signal).length > 65536) {
