@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer } from "http";
 import WebSocket, { WebSocketServer } from "ws";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 
 const app = express();
 const server = createServer(app);
@@ -36,6 +36,7 @@ const usernameNouns = [
     "Badger", "Comet", "Dragon", "Falcon", "Harbor", "Island",
     "Jaguar", "Lantern", "Meadow", "Otter", "Panda", "Voyage"
 ];
+const adminNameCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function createUsername() {
     const taken = new Set(
@@ -56,6 +57,24 @@ function createUsername() {
     let name;
     do {
         name = `Guest${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    } while (taken.has(name.toLowerCase()));
+    return name;
+}
+
+function createAdminUsername(id) {
+    const taken = new Set(
+        Array.from(players.entries())
+            .filter(([playerId]) => playerId !== id)
+            .map(([, player]) => player.name.toLowerCase())
+    );
+
+    let name;
+    do {
+        let suffix = "";
+        for (let index = 0; index < 4; index += 1) {
+            suffix += adminNameCharacters[randomInt(adminNameCharacters.length)];
+        }
+        name = `admin-${suffix}`;
     } while (taken.has(name.toLowerCase()));
     return name;
 }
@@ -97,6 +116,8 @@ function broadcastPlayers(roomId) {
         if (player) {
             roomPlayers[playerId] = {
                 name: player.name,
+                isAdmin: player.isAdmin,
+                cameraEnabled: player.cameraEnabled,
                 x: player.x,
                 y: player.y,
                 z: player.z,
@@ -204,6 +225,7 @@ wss.on("connection", socket => {
         yaw: 0,
         emoting: false,
         vibrating: false,
+        cameraEnabled: false,
         roomId: null
     });
 
@@ -250,8 +272,8 @@ wss.on("connection", socket => {
 
         if (data.type === "become_admin") {
             const player = players.get(id);
-            if (player) {
-                player.name = "admin";
+            if (player && !player.isAdmin) {
+                player.name = createAdminUsername(id);
                 player.isAdmin = true;
                 send(socket, {
                     type: "identity",
@@ -262,6 +284,43 @@ wss.on("connection", socket => {
                     broadcastPlayers(player.roomId);
                 }
             }
+            return;
+        }
+
+        if (data.type === "camera_enabled" && typeof data.enabled === "boolean") {
+            const player = players.get(id);
+            if (!player?.isAdmin || !player.roomId) {
+                return;
+            }
+
+            player.cameraEnabled = data.enabled;
+            broadcastPlayers(player.roomId);
+            return;
+        }
+
+        if (data.type === "camera_signal" &&
+            typeof data.targetId === "string" &&
+            data.signal &&
+            typeof data.signal === "object") {
+            const player = players.get(id);
+            const target = players.get(data.targetId);
+            const signalType = data.signal.type;
+            const validDirection = player?.isAdmin
+                ? target?.isAdmin === false && player.cameraEnabled &&
+                  (signalType === "answer" || signalType === "candidate")
+                : target?.isAdmin === true && target.cameraEnabled &&
+                  (signalType === "offer" || signalType === "candidate");
+            if (!player?.roomId || player.roomId !== target?.roomId ||
+                !validDirection ||
+                JSON.stringify(data.signal).length > 65536) {
+                return;
+            }
+
+            send(sockets.get(data.targetId), {
+                type: "camera_signal",
+                from: id,
+                signal: data.signal
+            });
             return;
         }
 
