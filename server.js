@@ -100,7 +100,8 @@ function broadcastPlayers(roomId) {
                 x: player.x,
                 y: player.y,
                 z: player.z,
-                yaw: player.yaw
+                yaw: player.yaw,
+                emoting: player.emoting
             };
         }
     }
@@ -160,6 +161,7 @@ function joinRoom(id, requestedRoomId) {
     player.y = 3.5;
     player.z = 0;
     player.yaw = 0;
+    player.emoting = false;
     player.roomId = room.id;
     room.players.add(id);
 
@@ -197,6 +199,7 @@ wss.on("connection", socket => {
         y: 3.5,
         z: 0,
         yaw: 0,
+        emoting: false,
         roomId: null
     });
 
@@ -271,6 +274,17 @@ wss.on("connection", socket => {
             player.y = y;
             player.z = z;
             player.yaw = yaw;
+            return;
+        }
+
+        if (data.type === "emote" && typeof data.emoting === "boolean") {
+            const player = players.get(id);
+            if (!player || !player.roomId) {
+                return;
+            }
+
+            player.emoting = data.emoting;
+            broadcastPlayers(player.roomId);
         }
     });
 
