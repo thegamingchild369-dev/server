@@ -197,6 +197,7 @@ wss.on("connection", socket => {
     sockets.set(id, socket);
     players.set(id, {
         name: createUsername(),
+        isAdmin: false,
         x: 0,
         y: 3.5,
         z: 0,
@@ -209,7 +210,8 @@ wss.on("connection", socket => {
     send(socket, {
         type: "welcome",
         id,
-        username: players.get(id).name
+        username: players.get(id).name,
+        isAdmin: false
     });
 
     socket.on("message", rawMessage => {
@@ -250,9 +252,41 @@ wss.on("connection", socket => {
             const player = players.get(id);
             if (player) {
                 player.name = "admin";
-                send(socket, { type: "identity", username: player.name });
+                player.isAdmin = true;
+                send(socket, {
+                    type: "identity",
+                    username: player.name,
+                    isAdmin: true
+                });
                 if (player.roomId) {
                     broadcastPlayers(player.roomId);
+                }
+            }
+            return;
+        }
+
+        if (data.type === "admin_chat") {
+            const player = players.get(id);
+            if (!player?.isAdmin || typeof data.text !== "string") {
+                return;
+            }
+
+            const text = data.text.trim();
+            if (!text || text.length > 500) {
+                return;
+            }
+
+            const message = {
+                type: "admin_chat",
+                author: player.name,
+                text
+            };
+            for (const [recipientId, recipient] of players) {
+                if (recipient.isAdmin) {
+                    const recipientSocket = sockets.get(recipientId);
+                    if (recipientSocket) {
+                        send(recipientSocket, message);
+                    }
                 }
             }
             return;
