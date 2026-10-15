@@ -86,11 +86,50 @@ function send(socket, data) {
 }
 
 function getRoomList() {
-    return Array.from(rooms.values(), room => ({
+    return Array.from(rooms.values())
+        .filter(room => !room.started)
+        .map(room => ({
+            id: room.id,
+            name: room.name,
+            playerCount: room.players.size
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function getRoomState(room) {
+    const roomPlayers = {};
+    for (const playerId of room.players) {
+        const player = players.get(playerId);
+        if (player) {
+            roomPlayers[playerId] = {
+                name: player.name,
+                isHost: playerId === room.hostId
+            };
+        }
+    }
+
+    return {
         id: room.id,
         name: room.name,
-        playerCount: room.players.size
-    })).sort((a, b) => a.name.localeCompare(b.name));
+        hostId: room.hostId,
+        gameMode: room.gameMode,
+        started: room.started,
+        players: roomPlayers
+    };
+}
+
+function broadcastRoomState(room) {
+    const message = {
+        type: "room_state",
+        room: getRoomState(room)
+    };
+
+    for (const playerId of room.players) {
+        const socket = sockets.get(playerId);
+        if (socket) {
+            send(socket, message);
+        }
+    }
 }
 
 function broadcastRoomList() {
@@ -157,7 +196,11 @@ function leaveRoom(id) {
         if (room.players.size === 0) {
             rooms.delete(roomId);
         } else {
+            if (room.hostId === id) {
+                room.hostId = room.players.values().next().value;
+            }
             broadcastPlayers(roomId);
+            broadcastRoomState(room);
         }
     }
 
@@ -171,6 +214,14 @@ function joinRoom(id, requestedRoomId) {
         send(sockets.get(id), {
             type: "room_error",
             message: "That room is no longer available."
+        });
+        return;
+    }
+
+    if (room.started) {
+        send(sockets.get(id), {
+            type: "room_error",
+            message: "That game has already started."
         });
         return;
     }
@@ -191,13 +242,13 @@ function joinRoom(id, requestedRoomId) {
     send(sockets.get(id), {
         type: "room_joined",
         room: {
-            id: room.id,
-            name: room.name
+            ...getRoomState(room)
         },
         username: player.name
     });
 
     broadcastPlayers(room.id);
+    broadcastRoomState(room);
     broadcastRoomList();
 }
 
@@ -258,7 +309,10 @@ wss.on("connection", socket => {
             const room = {
                 id: randomUUID(),
                 name: createRoomName(),
-                players: new Set()
+                players: new Set(),
+                hostId: id,
+                gameMode: "sandbox",
+                started: false
             };
             rooms.set(room.id, room);
             joinRoom(id, room.id);
@@ -267,6 +321,71 @@ wss.on("connection", socket => {
 
         if (data.type === "join_room" && typeof data.roomId === "string") {
             joinRoom(id, data.roomId);
+            return;
+        }
+
+        if (data.type === "request_room_state") {
+            const player = players.get(id);
+            const room = player?.roomId ? rooms.get(player.roomId) : null;
+            if (room) {
+                send(socket, {
+                    type: "room_state",
+                    room: getRoomState(room)
+                });
+            }
+            return;
+        }
+
+        if (data.type === "set_game_mode" &&
+            (data.gameMode === "sandbox" || data.gameMode === "hide_and_seek")) {
+            const player = players.get(id);
+            const room = player?.roomId ? rooms.get(player.roomId) : null;
+            if (!room || room.hostId !== id || room.started) {
+                return;
+            }
+
+            room.gameMode = data.gameMode;
+            broadcastRoomState(room);
+            return;
+        }
+
+        if (data.type === "start_game") {
+            const player = players.get(id);
+            const room = player?.roomId ? rooms.get(player.roomId) : null;
+            if (!room || room.hostId !== id || room.started) {
+                return;
+            }
+
+            room.started = true;
+            const message = {
+                type: "game_started",
+                room: getRoomState(room)
+            };
+            for (const playerId of room.players) {
+                const roomSocket = sockets.get(playerId);
+                if (roomSocket) {
+                    send(roomSocket, message);
+                }
+            }
+            broadcastRoomState(room);
+            broadcastRoomList();
+            return;
+        }
+
+        if (data.type === "kick_player" && typeof data.targetId === "string") {
+            const player = players.get(id);
+            const room = player?.roomId ? rooms.get(player.roomId) : null;
+            const target = players.get(data.targetId);
+            if (!room || room.hostId !== id || data.targetId === id ||
+                !target || target.roomId !== room.id) {
+                return;
+            }
+
+            send(sockets.get(data.targetId), {
+                type: "room_kicked",
+                message: "You were removed from the room by the host."
+            });
+            leaveRoom(data.targetId);
             return;
         }
 
@@ -282,6 +401,10 @@ wss.on("connection", socket => {
                 });
                 if (player.roomId) {
                     broadcastPlayers(player.roomId);
+                    const room = rooms.get(player.roomId);
+                    if (room) {
+                        broadcastRoomState(room);
+                    }
                 }
             }
             return;
