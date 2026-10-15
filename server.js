@@ -19,6 +19,8 @@ const wss = new WebSocketServer({
 const players = new Map();
 const rooms = new Map();
 const sockets = new Map();
+const locationRevealIntervalMs = 45_000;
+const locationRevealDurationMs = 5_000;
 
 const roomAdjectives = [
     "Amber", "Brisk", "Cosmic", "Daring", "Frosty", "Golden",
@@ -121,6 +123,8 @@ function getRoomState(room) {
         endsAt: room.endsAt || null,
         ended: room.ended === true,
         nextRoundAt: room.nextRoundAt || null,
+        nextLocationRevealAt: room.nextLocationRevealAt || null,
+        locationRevealEndsAt: room.locationRevealEndsAt || null,
         endReason: room.endReason || null,
         players: roomPlayers
     };
@@ -171,10 +175,13 @@ function broadcastPlayers(roomId) {
         return;
     }
 
+    const now = Date.now();
     for (const playerId of room.players) {
         const socket = sockets.get(playerId);
         if (socket) {
             const viewerRole = room.roles?.get(playerId);
+            const locationsRevealed = room.locationRevealEndsAt &&
+                now < room.locationRevealEndsAt;
             const roomPlayers = {};
             for (const targetId of room.players) {
                 const player = players.get(targetId);
@@ -185,7 +192,7 @@ function broadcastPlayers(roomId) {
                 const role = room.roles?.get(targetId) || null;
                 const hiddenFromViewer = room.gameMode === "hide_and_seek" &&
                     room.started && !room.ended && room.phase === "hiding" &&
-                    viewerRole === "hider" && role === "seeker";
+                    !locationsRevealed && viewerRole === "hider" && role === "seeker";
                 roomPlayers[targetId] = {
                     name: player.name,
                     isAdmin: player.isAdmin,
@@ -219,6 +226,8 @@ function endGame(room, reason, restartRound = false) {
     room.phase = "ended";
     room.phaseEndsAt = null;
     room.endReason = reason;
+    room.nextLocationRevealAt = null;
+    room.locationRevealEndsAt = null;
     room.nextRoundAt = restartRound && room.players.size > 1
         ? Date.now() + 5_000
         : null;
@@ -252,6 +261,8 @@ function startHideAndSeekRound(room, now, rotateSeeker = false) {
     room.ended = false;
     room.endReason = null;
     room.nextRoundAt = null;
+    room.nextLocationRevealAt = now + locationRevealIntervalMs;
+    room.locationRevealEndsAt = null;
 
     for (const playerId of playerIds) {
         const player = players.get(playerId);
@@ -283,6 +294,20 @@ function advanceHideAndSeek(room, now) {
             broadcastPlayers(room.id);
         }
         return;
+    }
+
+    if (room.locationRevealEndsAt && now >= room.locationRevealEndsAt) {
+        room.locationRevealEndsAt = null;
+        broadcastGameState(room);
+        broadcastPlayers(room.id);
+    }
+
+    if (!room.locationRevealEndsAt && room.nextLocationRevealAt &&
+        now >= room.nextLocationRevealAt) {
+        room.locationRevealEndsAt = now + locationRevealDurationMs;
+        room.nextLocationRevealAt = now + locationRevealIntervalMs;
+        broadcastGameState(room);
+        broadcastPlayers(room.id);
     }
 
     if (room.phase === "hiding" && now >= room.phaseEndsAt) {
@@ -499,6 +524,8 @@ wss.on("connection", socket => {
                 roundNumber: 0,
                 seekerId: id,
                 nextRoundAt: null,
+                nextLocationRevealAt: null,
+                locationRevealEndsAt: null,
                 endReason: null
             };
             rooms.set(room.id, room);
