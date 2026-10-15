@@ -115,10 +115,12 @@ function getRoomState(room) {
         gameMode: room.gameMode,
         started: room.started,
         roles: Object.fromEntries(room.roles || []),
+        roundNumber: room.roundNumber || 0,
         phase: room.phase || null,
         phaseEndsAt: room.phaseEndsAt || null,
         endsAt: room.endsAt || null,
         ended: room.ended === true,
+        nextRoundAt: room.nextRoundAt || null,
         endReason: room.endReason || null,
         players: roomPlayers
     };
@@ -208,7 +210,7 @@ function broadcastPlayers(roomId) {
     }
 }
 
-function endGame(room, reason) {
+function endGame(room, reason, restartRound = false) {
     if (!room.started || room.ended) {
         return;
     }
@@ -217,12 +219,69 @@ function endGame(room, reason) {
     room.phase = "ended";
     room.phaseEndsAt = null;
     room.endReason = reason;
+    room.nextRoundAt = restartRound && room.players.size > 1
+        ? Date.now() + 5_000
+        : null;
     broadcastGameState(room);
     broadcastPlayers(room.id);
 }
 
+function startHideAndSeekRound(room, now, rotateSeeker = false) {
+    const playerIds = [...room.players];
+    if (playerIds.length === 0) {
+        return;
+    }
+
+    if (rotateSeeker && room.seekerId) {
+        const previousSeekerIndex = playerIds.indexOf(room.seekerId);
+        room.seekerId = playerIds[
+            (previousSeekerIndex + 1 + playerIds.length) % playerIds.length
+        ];
+    } else if (!room.players.has(room.seekerId)) {
+        room.seekerId = room.players.has(room.hostId) ? room.hostId : playerIds[0];
+    }
+
+    room.roundNumber = (room.roundNumber || 0) + 1;
+    room.roles = new Map(playerIds.map(playerId => [
+        playerId,
+        playerId === room.seekerId ? "seeker" : "hider"
+    ]));
+    room.phase = "hiding";
+    room.phaseEndsAt = now + 30_000;
+    room.endsAt = room.phaseEndsAt + 5 * 60_000;
+    room.ended = false;
+    room.endReason = null;
+    room.nextRoundAt = null;
+
+    for (const playerId of playerIds) {
+        const player = players.get(playerId);
+        if (player) {
+            player.x = 0;
+            player.y = 0;
+            player.z = 0;
+            player.yaw = 0;
+            player.emoting = false;
+            player.vibrating = false;
+        }
+    }
+}
+
 function advanceHideAndSeek(room, now) {
-    if (!room.started || room.ended || room.gameMode !== "hide_and_seek") {
+    if (!room.started || room.gameMode !== "hide_and_seek") {
+        return;
+    }
+
+    if (room.ended) {
+        if (room.nextRoundAt && now >= room.nextRoundAt) {
+            if (room.players.size < 2) {
+                room.nextRoundAt = null;
+                broadcastGameState(room);
+                return;
+            }
+            startHideAndSeekRound(room, now, true);
+            broadcastGameState(room);
+            broadcastPlayers(room.id);
+        }
         return;
     }
 
@@ -238,7 +297,7 @@ function advanceHideAndSeek(room, now) {
     }
 
     if (now >= room.endsAt) {
-        endGame(room, "Time ran out. The hiders win.");
+        endGame(room, "Time ran out. The hiders win.", true);
         return;
     }
 
@@ -253,7 +312,7 @@ function advanceHideAndSeek(room, now) {
     }
 
     if (hiders.length === 0) {
-        endGame(room, "All hiders were found. The seekers win.");
+        endGame(room, "All hiders were found. The seekers win.", true);
         return;
     }
 
@@ -288,7 +347,7 @@ function advanceHideAndSeek(room, now) {
         broadcastGameState(room);
         broadcastPlayers(room.id);
         if (![...room.roles.values()].includes("hider")) {
-            endGame(room, "All hiders were found. The seekers win.");
+            endGame(room, "All hiders were found. The seekers win.", true);
             return;
         }
     }
@@ -318,7 +377,7 @@ function leaveRoom(id) {
             if (room.gameMode === "hide_and_seek" && room.started &&
                 !room.ended && room.phase === "seeking" &&
                 ![...room.roles.values()].includes("hider")) {
-                endGame(room, "No hiders remain in the room. The seekers win.");
+                endGame(room, "No hiders remain in the room. The seekers win.", true);
             }
         }
     }
@@ -437,6 +496,9 @@ wss.on("connection", socket => {
                 phaseEndsAt: null,
                 endsAt: null,
                 ended: false,
+                roundNumber: 0,
+                seekerId: id,
+                nextRoundAt: null,
                 endReason: null
             };
             rooms.set(room.id, room);
@@ -481,19 +543,12 @@ wss.on("connection", socket => {
                 return;
             }
 
-            room.started = true;
             if (room.gameMode === "hide_and_seek") {
-                const now = Date.now();
-                room.roles = new Map(
-                    [...room.players].map(playerId => [
-                        playerId,
-                        playerId === room.hostId ? "seeker" : "hider"
-                    ])
-                );
-                room.phase = "hiding";
-                room.phaseEndsAt = now + 30_000;
-                room.endsAt = room.phaseEndsAt + 5 * 60_000;
+                room.started = true;
+                room.seekerId = room.hostId;
+                startHideAndSeekRound(room, Date.now());
             } else {
+                room.started = true;
                 room.phase = "playing";
             }
 
